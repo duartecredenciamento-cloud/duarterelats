@@ -61,12 +61,18 @@ def _cookie(handler,name):
     except Exception: return ''
     return jar[name].value if name in jar else ''
 
+def _oauth_cookie(handler):
+    return _cookie(handler,'duarte_oauth')
+
+def _session_cookie(handler):
+    return _cookie(handler,'duarte_session')
+
 def _session_key(sid):
     secret=os.environ.get('DUARTE_SESSION_SECRET','').encode()
     return hmac.new(secret,sid.encode(),hashlib.sha256).hexdigest()
 
 def _get_session(handler):
-    sid=_cookie(handler,'duarte_session')
+    sid=_session_cookie(handler)
     if not sid:return None
     key=_session_key(sid)
     now=time.time()
@@ -79,7 +85,7 @@ def _get_session(handler):
 
 def _verify_id_token_nonce(result, expected):
     # MSAL validates the OIDC ID token and flow state while exchanging the code.
-    # Compare the nonce from the claims validated by MSAL with our one-time value.
+    # Compare the nonce from the claims validated by MSAL with the one-time value generated in the flow.
     claims=result.get('id_token_claims') or ''
     if isinstance(claims,str):
         try:claims=json.loads(claims)
@@ -489,7 +495,12 @@ class Handler(SimpleHTTPRequestHandler):
         if path=='/auth/login':
             if not cfg['configured']:return self._setup_page()
             try:
-                nonce=secrets.token_urlsafe(24);app=_msal_app();flow=app.initiate_auth_code_flow(scopes=AUTH_SCOPES,redirect_uri=cfg['redirect'],prompt='select_account',nonce=nonce)
+                app=_msal_app()
+                flow=app.initiate_auth_code_flow(
+                    scopes=AUTH_SCOPES,
+                    redirect_uri=cfg['redirect'],
+                    prompt='select_account'
+                )
                 state=flow.get('state')
                 if not state:raise RuntimeError('Não foi possível iniciar o login Microsoft.')
                 cookie=secrets.token_urlsafe(24)
@@ -501,7 +512,8 @@ class Handler(SimpleHTTPRequestHandler):
                     _auth_flows[state]={'flow':flow,'cookie':cookie,'expires':now+600}
                 secure='; Secure' if cfg['base'].startswith('https://') else ''
                 return self._redirect(flow['auth_uri'],f'duarte_oauth={cookie}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=600{secure}')
-            except Exception:return self.send_json({'error':'Não foi possível iniciar o login Microsoft. Verifique a configuração do Entra.'},503)
+            except Exception:
+                return self.send_json({'error':'Não foi possível iniciar o login Microsoft. Verifique a configuração do Entra e os logs do serviço.'},503)
         if path=='/auth/callback':return self._login_callback()
         if path=='/api/auth/status':
             if cfg['enabled'] and not cfg['configured']:return self.send_json({'error':'Autenticação corporativa ainda não configurada.'},503)
