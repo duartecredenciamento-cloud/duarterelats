@@ -20,12 +20,24 @@ Login Google OAuth/OIDC, Microsoft Graph, permissão de caixa Outlook, persistê
 
 A planilha de modelo enviada inclui “Resumo Executivo”, “MedLight — Clínica MedLight (1010)” e “EvCiti — Centro de Infusão (1044)”; os detalhes afirmam “Nenhum e-mail encontrado para este cliente no período” e totais apresentados são zero. São estados do modelo, não dados operacionais atuais. PDF de referência é do Duarte Transcribe e serve apenas como exemplo de organização narrativa.
 
+## Deploy no Railway
+
+O log enviado informa que o Railway recebeu **somente `README.md`** (`The app contents that Railpack analyzed contains: ./ README.md`). Portanto, este erro ainda não é causado pelo código Python: o commit/branch/pasta de origem configurados no serviço não incluem os arquivos da aplicação. O Railway precisa receber, na raiz da origem configurada, pelo menos `server.py`, `index.html`, `requirements.txt` e este `README.md`.
+
+1. Extraia o pacote e envie **os arquivos de dentro da pasta do projeto** para a raiz do repositório GitHub conectado ao Railway. Não envie apenas o README e não deixe os arquivos dentro de uma subpasta, a menos que configure o Root Directory do Railway para essa subpasta.
+2. Confirme no GitHub que `server.py`, `requirements.txt`, `Procfile`, `.python-version` e `index.html` aparecem na raiz do branch monitorado pelo Railway; faça commit/push.
+3. No Railway, confira em **Settings → Source** se o repositório, branch e Root Directory são os mesmos onde esses arquivos foram publicados. Para arquivos na raiz, deixe o Root Directory vazio ou `/`.
+4. O `Procfile` inicia `python server.py`; o `requirements.txt` precisa ficar junto ao servidor e lista `openpyxl` e `reportlab`. O servidor não depende do módulo `cgi`; o envio multipart usa a biblioteca padrão do Python. A configuração `.python-version` seleciona Python 3.12 e `PORT` é lida do ambiente. Faça novo deploy após confirmar o commit.
+5. O log seguinte deve avançar da etapa de preparação do build para instalação das dependências e início do serviço. Depois, verifique o endpoint `/api/health`.
+
+Não basta criar os arquivos localmente: é necessário que estejam commitados e enviados ao repositório exato que o serviço Railway está observando. Este deploy não habilita autenticação, Google OAuth, Microsoft Graph, persistência ou proteção para acesso público; não exponha dados reais antes de implementar esses controles.
+
 ## Execução local
 
-Requer Python 3.11 e dependências `openpyxl` e `reportlab` (já disponíveis no runtime desta entrega). No terminal:
+Requer Python 3.12 (ou compatível) e as dependências listadas no `requirements.txt`. Dentro da pasta do projeto, instale-as e inicie o serviço:
 
 ```bash
-cd outputs/duarte-reports
+python -m pip install -r requirements.txt
 python server.py
 ```
 
@@ -34,7 +46,7 @@ Abrir `http://127.0.0.1:8000`. O serviço escuta em todas as interfaces da máqu
 ### Verificação de dependências num ambiente novo
 
 ```bash
-python -m pip install openpyxl reportlab
+python -m pip install -r requirements.txt
 python server.py
 ```
 
@@ -80,5 +92,3 @@ Não existe `.env` com credenciais, porque nenhuma integração OAuth/Graph est�
 - `Relatorio_Consolidado_20260629_1226.xlsx`: abas de resumo e dois detalhamentos de cliente; estados vazios/zeros indicados acima.
 - `Mostrando-Sistema.md`: referência narrativa de três páginas com identificação, resumo, participantes, cronologia, tópicos, decisões, ações, riscos e próximos passos; nome da marca não se aplica.
 - Matriz `.xlsm`: abas FLUXO OPERACIONAL, TRABALHOS DIÁRIOS, REUNIÕES E VISITAS, RESUMO OPERADORAS, DETALHES OPERADORAS, FICHA CADASTRAL, ESPECIALIDADE e CONTATOS. FLUXO OPERACIONAL tem cabeçalho COD, CLIENTE, ID, OPERADORA, CATEGORIA, ID PRIOR., PRIORIDADE, NÚMERO ANS, VIDAS NA ANS, PORTE, HONORÁRIOS, DIFERENCIAL e campos de fluxo/status; TRABALHOS DIÁRIOS tem DATA, OPERADORA/CLIENTE, DESCRIÇÃO DA ATIVIDADE e STATUS; REUNIÕES E VISITAS tem COD, CLIENTE, ID OPER., OPERADORA, DATA, HORÁRIO, TIPO, MOTIVO, STATUS, DETALHE, PARTICIPANTES, OBSERVAÇÃO; RESUMO/DETALHES contêm datas contratuais, prestador e dados de serviços; CONTATOS contém códigos, cliente, operadora e colunas de datas/contatos. Encontradas fórmulas `_xlfn.XLOOKUP` com referências externas. Proteção de workbook reportada como ausente pelo parser e nenhum mecanismo de senha utilizado; não alteramos o arquivo original.
-#   d u a r t e r e l a t s  
- 

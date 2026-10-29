@@ -5,7 +5,7 @@ from email.parser import BytesParser
 from email.utils import parsedate_to_datetime, getaddresses
 from datetime import datetime, date
 from urllib.parse import urlparse
-import cgi, csv, io, json, os, re, hashlib, mimetypes, tempfile
+import csv, io, json, os, re, hashlib, mimetypes, tempfile
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -165,6 +165,29 @@ def make_pdf(payload):
     story.append(t);story += [Paragraph('Pontos de atenção',styles['DRH']),Paragraph('Fatos calculados: contagens são derivadas exclusivamente dos metadados importados e do período aplicado. Associação por cliente só é considerada quando veio informada na fonte ou foi revisada; destinatários e assunto, isoladamente, não confirmam atendimento.',styles['BodyText']),Paragraph(f"Matriz importada: {matrix.get('arquivo','Não importada')}. Registros distintos identificados: {matrix.get('registros_unicos',0)}; códigos únicos: {matrix.get('codigos_unicos',0)}. Estes dados não foram comparados com Duarte Performance.",styles['BodyText']),Paragraph('Metodologia e limitações',styles['DRH']),Paragraph('Deduplicação por Message-ID quando disponível; caso contrário, hash de data, remetente, destinatários e assunto. Respostas continuam sendo mensagens distintas; o identificador de conversa é exibido, mas não somado como mensagem. Sem conexão Outlook/Graph, sem autenticação e sem persistência central neste pacote. Nenhuma avaliação automática de produtividade é produzida.',styles['BodyText'])]
     doc.build(story);return buf.getvalue()
 
+def parse_multipart_form(content_type, body):
+    """Parse multipart/form-data using only the Python standard library."""
+    message=BytesParser(policy=policy.default).parsebytes(
+        f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode('ascii')+body
+    )
+    if not message.is_multipart():
+        raise ValueError('Envie os arquivos como multipart/form-data.')
+    fields={}; files={}
+    for part in message.iter_parts():
+        if part.get_content_disposition()!='form-data':
+            continue
+        name=part.get_param('name',header='content-disposition')
+        if not name:
+            continue
+        filename=part.get_filename()
+        value=part.get_payload(decode=True) or b''
+        if filename is not None:
+            files.setdefault(name,[]).append({'filename':filename,'data':value})
+        else:
+            charset=part.get_content_charset() or 'utf-8'
+            fields[name]=value.decode(charset,errors='replace')
+    return fields,files
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*a,**kw):super().__init__(*a,directory=str(ROOT),**kw)
     def log_message(self,*args):pass
@@ -175,34 +198,41 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         if not self.path.startswith('/api/'):return self.send_error(404)
+        if self.path not in ('/api/emails','/api/matrix','/api/export/xlsx','/api/export/pdf'):
+            return self.send_json({'error':'Operação não encontrada'},404)
         try:
-            form=cgi.FieldStorage(fp=self.rfile,headers=self.headers,environ={'REQUEST_METHOD':'POST','CONTENT_TYPE':self.headers.get('Content-Type',''),'CONTENT_LENGTH':self.headers.get('Content-Length','0')})
+            length=int(self.headers.get('Content-Length','0'))
+            if length>MAX_UPLOAD+1024*1024:raise ValueError('A solicitação excede o limite de 25 MB.')
+            body=self.rfile.read(length)
+            if self.path in ('/api/export/xlsx','/api/export/pdf'):
+                payload=json.loads(body or b'{}')
+                content=make_xlsx(payload) if self.path.endswith('xlsx') else make_pdf(payload)
+                fname='DuarteReports_Relatorio.xlsx' if self.path.endswith('xlsx') else 'DuarteReports_Relatorio.pdf'
+                self.send_response(200);self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if fname.endswith('xlsx') else 'application/pdf');self.send_header('Content-Disposition',f'attachment; filename="{fname}"');self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content);return
+            fields,files=parse_multipart_form(self.headers.get('Content-Type',''),body)
             if self.path=='/api/emails':
-                items=form['files'] if 'files' in form else []
-                if not isinstance(items,list):items=[items]
+                items=files.get('files',[])
+                if not items:raise ValueError('Selecione ao menos um arquivo para importar.')
                 allrows=[];names=[]
                 for item in items:
-                    name,data=decode_upload(item);names.append(name)
+                    name=os.path.basename(item['filename'] or 'importacao');data=item['data']
+                    if len(data)>MAX_UPLOAD:raise ValueError('Arquivo excede o limite de 25 MB.')
+                    names.append(name)
                     if Path(name).suffix.lower()=='.eml':allrows.append(parse_eml(name,data))
                     else:allrows.extend(parse_rows(name,data))
                 rows,dups=email_normalize(allrows,', '.join(names))
-                start=form.getfirst('start','');end=form.getfirst('end','')
+                start=fields.get('start','');end=fields.get('end','')
                 def within(x):
                     d=(x.get('data') or '')[:10]
                     return (not start or d>=start) and (not end or d<=end)
                 rows=[x for x in rows if within(x)]
                 return self.send_json({'emails':rows,'duplicates':dups,'files':names,'source':'Importação local: '+', '.join(names),'count':len(rows)})
-            if self.path=='/api/matrix':
-                item=form['file'];name,data=decode_upload(item);return self.send_json(matrix_parse(name,data))
-            if self.path in ('/api/export/xlsx','/api/export/pdf'):
-                length=int(self.headers.get('Content-Length','0'))
-                if length>MAX_UPLOAD:raise ValueError('O relatório excede o tamanho aceito.')
-                payload=json.loads(self.rfile.read(length) or b'{}')
-                content=make_xlsx(payload) if self.path.endswith('xlsx') else make_pdf(payload)
-                fname='DuarteReports_Relatorio.xlsx' if self.path.endswith('xlsx') else 'DuarteReports_Relatorio.pdf'
-                self.send_response(200);self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if fname.endswith('xlsx') else 'application/pdf');self.send_header('Content-Disposition',f'attachment; filename="{fname}"');self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content);return
-            return self.send_json({'error':'Operação não encontrada'},404)
+            items=files.get('file',[])
+            if not items:raise ValueError('Selecione o arquivo da matriz.')
+            item=items[0];name=os.path.basename(item['filename'] or 'importacao');data=item['data']
+            if len(data)>MAX_UPLOAD:raise ValueError('Arquivo excede o limite de 25 MB.')
+            return self.send_json(matrix_parse(name,data))
         except Exception as e:return self.send_json({'error':str(e) or 'Falha ao processar arquivo'},400)
 
 if __name__=='__main__':
-    port=int(os.environ.get('PORT','8000'));print(f'Duarte Reports disponível em http://127.0.0.1:{port}');ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
+    port=int(os.environ.get('PORT','8000'));print(f'Duarte Reports disponível na porta {port}',flush=True);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
