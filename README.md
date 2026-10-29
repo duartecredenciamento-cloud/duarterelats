@@ -12,11 +12,13 @@ Aplicação web local para leitura de arquivos selecionados, análise de metadad
 - Importação `.xlsx`/`.xlsm` de matriz sem alterar o original, identifica abas e cabeçalhos COD/CLIENTE/OPERADORA e exibe registros, contagens e hash SHA-256. Leitura de fórmulas usa valores salvos no workbook. Se valores dependem de links/fórmulas externas sem cache atualizado, resultados podem faltar; validar no Excel fonte.
 - Semáforo provisório por datas em colunas com “contato”; limites ajustáveis apenas na interface desta sessão. Não constitui regra operacional aprovada nem tem histórico persistente.
 - Exportação `.xlsx` (abas resumo, detalhamento, consolidado, matriz/revisão e metodologia) e PDF narrativo derivados do conteúdo importado. O sistema não guarda arquivos após processar.
+- Integração opcional com Azure AI Foundry para análise executiva de corpos de mensagens, habilitada apenas quando o administrador configura endpoint, deployment, chave, gate de acesso e flag; consentimento explícito por execução. A resposta exige estrutura JSON completa e IDs de fontes verificáveis em todas as conclusões estruturadas. Limite atual: 40 mensagens, 12 mil caracteres por mensagem e 120 mil caracteres no total; os limites são validados sem truncar mensagens, sem paginação/retomada, anexos ou análise parcial.
+- A análise só é possível para `.eml` e CSV/XLSX que tenham coluna `corpo` ou `body`. A interface mostra análise JSON na tela e inclui a saída validada em PDF/Excel quando exportada; o resultado é transitório na sessão, sem histórico ou armazenamento.
 - Aba de ligações futura, sem dados ou métricas fictícias.
 
 ## Não configurado / não afirmar como funcional
 
-Login Google OAuth/OIDC, Microsoft Graph, permissão de caixa Outlook, persistência compartilhada, auditoria central, armazenamento seguro, API do Duarte Performance e integração telefônica. O estado de autenticação é “não configurado”; não há login simulado.
+Login Google OAuth/OIDC e Microsoft Entra ID/OIDC, Microsoft Graph, permissão de caixa Outlook, persistência compartilhada, auditoria central, armazenamento seguro, API do Duarte Performance e integração telefônica permanecem não configurados. A integração de IA não conecta ao Outlook e não substitui identidade/autorização corporativa. O gate `DUARTE_AI_ACCESS_TOKEN` é só uma barreira técnica compartilhada, não login, sessão, proteção multiusuário ou controle de autorização. A análise depende de endpoint/deployment/chave válidos, serviço acessível e aprovação da TI/DPO; nenhum desses itens está confirmado neste pacote.
 
 A planilha de modelo enviada inclui “Resumo Executivo”, “MedLight — Clínica MedLight (1010)” e “EvCiti — Centro de Infusão (1044)”; os detalhes afirmam “Nenhum e-mail encontrado para este cliente no período” e totais apresentados são zero. São estados do modelo, não dados operacionais atuais. PDF de referência é do Duarte Transcribe e serve apenas como exemplo de organização narrativa.
 
@@ -50,7 +52,11 @@ python -m pip install -r requirements.txt
 python server.py
 ```
 
-Não existe `.env` com credenciais, porque nenhuma integração OAuth/Graph está habilitada. Variáveis aceitas: `PORT` para porta local; não são segredos.
+Nenhuma credencial real está incluída. Para ativar a integração opcional, a TI deve configurar no ambiente protegido do serviço — nunca no código, navegador ou repositório — `AZURE_OPENAI_ENDPOINT` (HTTPS do recurso), `AZURE_OPENAI_DEPLOYMENT` (deployment disponível no Foundry), `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_VERSION` (padrão documentado no exemplo), `DUARTE_AI_ANALYSIS_ENABLED=true` e `DUARTE_AI_ACCESS_TOKEN` (segredo aleatório forte para acesso à rota). Consulte `.env.example` apenas como modelo; não publique o valor preenchido.
+
+O servidor chama a interface REST de Chat Completions do endpoint configurado; não há SDK Microsoft instalado, integração Entra, validação de tenant, OAuth ou autorização por usuário. A chave Azure permanece no servidor; o segredo compartilhado de acesso é digitado pelo usuário e enviado em HTTPS somente à aplicação. Mesmo assim, esse gate não é adequado como autenticação de produção. O endpoint `/api/ai/status` informa apenas se as variáveis estão presentes; não verifica credenciais nem testa a disponibilidade/modelo. Chaves, deployment, versão de API, região e políticas devem ser confirmados pela TI e pelo responsável de privacidade antes de habilitar.
+
+A análise envia assunto, remetente, destinatários, data, identificador de conversa e corpo de cada mensagem selecionada ao serviço Azure configurado. Não envia anexos, mas o corpo pode incluir histórico citado e dados sensíveis. Há limites rígidos para evitar processamento parcial; não existe estimativa de custo, aprovação de cada destinatário, mascaramento/anonimização, cota de uso ou trilha de auditoria. Em `.eml`, mensagens multipartas podem fornecer versões `text/plain` e `text/html` simultaneamente; nesta versão ambas podem ser incluídas e causar duplicidade de texto na análise. Revise os arquivos de origem antes de consentir o envio. Não use dados reais enquanto não forem implementados login e autorização corporativos, CSRF, rate limiting, política de retenção e aprovação formal da organização. A aplicação local não grava o conteúdo da análise entre sessões.
 
 ## Arquitetura recomendada para produção
 
