@@ -18,7 +18,7 @@ Aplicação web local para leitura de arquivos selecionados, análise de metadad
 
 ## Não configurado / não afirmar como funcional
 
-Login Google OAuth/OIDC e Microsoft Entra ID/OIDC, Microsoft Graph, permissão de caixa Outlook, persistência compartilhada, auditoria central, armazenamento seguro, API do Duarte Performance e integração telefônica permanecem não configurados. A integração de IA não conecta ao Outlook e não substitui identidade/autorização corporativa. O gate `DUARTE_AI_ACCESS_TOKEN` é só uma barreira técnica compartilhada, não login, sessão, proteção multiusuário ou controle de autorização. A análise depende de endpoint/deployment/chave válidos, serviço acessível e aprovação da TI/DPO; nenhum desses itens está confirmado neste pacote.
+O fluxo web de login Microsoft Entra ID/OIDC está implementado neste pacote, mas só fica ativo após configuração dos segredos e consentimentos pela TI. A leitura de mensagens via Microsoft Graph, seleção de período/caixa e importação automática do Outlook ainda NÃO estão implementadas. Google OAuth/OIDC, persistência compartilhada, auditoria central, armazenamento seguro, API do Duarte Performance e integração telefônica permanecem não configurados. A integração de IA não conecta ao Outlook e não substitui identidade/autorização corporativa. O gate `DUARTE_AI_ACCESS_TOKEN` é só uma barreira técnica compartilhada, não login, sessão, proteção multiusuário ou controle de autorização. A análise depende de endpoint/deployment/chave válidos, serviço acessível e aprovação da TI/DPO; nenhum desses itens está confirmado neste pacote.
 
 A planilha de modelo enviada inclui “Resumo Executivo”, “MedLight — Clínica MedLight (1010)” e “EvCiti — Centro de Infusão (1044)”; os detalhes afirmam “Nenhum e-mail encontrado para este cliente no período” e totais apresentados são zero. São estados do modelo, não dados operacionais atuais. PDF de referência é do Duarte Transcribe e serve apenas como exemplo de organização narrativa.
 
@@ -32,7 +32,7 @@ O log enviado informa que o Railway recebeu **somente `README.md`** (`The app co
 4. O `Procfile` inicia `python server.py`; o `requirements.txt` precisa ficar junto ao servidor e lista `openpyxl` e `reportlab`. O servidor não depende do módulo `cgi`; o envio multipart usa a biblioteca padrão do Python. A configuração `.python-version` seleciona Python 3.12 e `PORT` é lida do ambiente. Faça novo deploy após confirmar o commit.
 5. O log seguinte deve avançar da etapa de preparação do build para instalação das dependências e início do serviço. Depois, verifique o endpoint `/api/health`.
 
-Não basta criar os arquivos localmente: é necessário que estejam commitados e enviados ao repositório exato que o serviço Railway está observando. Este deploy não habilita autenticação, Google OAuth, Microsoft Graph, persistência ou proteção para acesso público; não exponha dados reais antes de implementar esses controles.
+Não basta criar os arquivos localmente: é necessário que estejam commitados e enviados ao repositório exato que o serviço Railway está observando. O pacote atualizado inclui login Microsoft; ele exige configuração de Entra e Railway descrita abaixo. A leitura de mensagens do Graph ainda não existe. Mantenha o serviço bloqueado até concluir o login e validar o controle de acesso.
 
 ## Execução local
 
@@ -57,6 +57,32 @@ Nenhuma credencial real está incluída. Para ativar a integração opcional, a 
 O servidor chama a interface REST de Chat Completions do endpoint configurado; não há SDK Microsoft instalado, integração Entra, validação de tenant, OAuth ou autorização por usuário. A chave Azure permanece no servidor; o segredo compartilhado de acesso é digitado pelo usuário e enviado em HTTPS somente à aplicação. Mesmo assim, esse gate não é adequado como autenticação de produção. O endpoint `/api/ai/status` informa apenas se as variáveis estão presentes; não verifica credenciais nem testa a disponibilidade/modelo. Chaves, deployment, versão de API, região e políticas devem ser confirmados pela TI e pelo responsável de privacidade antes de habilitar.
 
 A análise envia assunto, remetente, destinatários, data, identificador de conversa e corpo de cada mensagem selecionada ao serviço Azure configurado. Não envia anexos, mas o corpo pode incluir histórico citado e dados sensíveis. Há limites rígidos para evitar processamento parcial; não existe estimativa de custo, aprovação de cada destinatário, mascaramento/anonimização, cota de uso ou trilha de auditoria. Em `.eml`, mensagens multipartas podem fornecer versões `text/plain` e `text/html` simultaneamente; nesta versão ambas podem ser incluídas e causar duplicidade de texto na análise. Revise os arquivos de origem antes de consentir o envio. Não use dados reais enquanto não forem implementados login e autorização corporativos, CSRF, rate limiting, política de retenção e aprovação formal da organização. A aplicação local não grava o conteúdo da análise entre sessões.
+
+
+## Login Microsoft Entra ID no Railway (pacote atualizado)
+
+A rota de retorno configurada no código e no exemplo é **https://duartelats-production.up.railway.app/auth/callback**. Cadastre-a como plataforma **Web** no registro do aplicativo Entra, usando exatamente HTTPS e o caminho `/auth/callback`; não cadastre como SPA. O aplicativo solicita somente permissões delegadas `User.Read` e `Mail.Read`, sem envio, exclusão ou alteração de mensagens.
+
+### Configuração no Entra
+
+1. Crie um registro de aplicativo para Duarte Relats no locatário corporativo; escolha contas somente deste diretório, salvo decisão organizacional diferente.
+2. Em **Autenticação → Adicionar uma plataforma → Web**, adicione `https://duartelats-production.up.railway.app/auth/callback`.
+3. Em **Permissões de API**, adicione Microsoft Graph → permissões delegadas `User.Read` e `Mail.Read`; conceda consentimento administrativo se a política da organização exigir.
+4. Copie o **ID do aplicativo (cliente)** e o **ID do diretório (locatário)**. Crie um segredo de cliente e guarde seu valor diretamente no Railway; nunca o envie por chat ou inclua no Git.
+
+### Variáveis protegidas no Railway
+
+Em **Variables** do serviço Duarte Relats, configure: `DUARTE_ENTRA_TENANT_ID` (ID do locatário), `DUARTE_ENTRA_CLIENT_ID` (ID do aplicativo), `DUARTE_ENTRA_CLIENT_SECRET` (valor secreto), `DUARTE_SESSION_SECRET` (valor aleatório com pelo menos 32 caracteres), `DUARTE_AUTH_REQUIRED=true` e `DUARTE_PUBLIC_BASE_URL=https://duartelats-production.up.railway.app`. O arquivo `.env.example` lista apenas nomes e valores fictícios. Depois, faça novo deploy. Não compartilhe capturas mostrando valores.
+
+Se precisar gerar `DUARTE_SESSION_SECRET` no computador de TI, use um gerador criptográfico local (por exemplo, `python -c "import secrets; print(secrets.token_urlsafe(48))"`) e cole o resultado diretamente no campo protegido do Railway. Esse segredo não é o segredo do aplicativo Entra.
+
+### O que a autenticação implementa e seus limites
+
+- Login OAuth 2.0/OIDC por fluxo de autorização web, validação de estado e cookie de correlação, cookie de sessão `HttpOnly`/`SameSite=Lax`/`Secure` em HTTPS, expiração de 8 horas e logout que invalida a sessão no servidor. A aplicação bloqueia páginas e APIs quando a autenticação é exigida e não configurada; `/api/health` continua público sem revelar segredos.
+- Token cache Microsoft permanece somente na memória do processo, nunca em cookie, navegador ou disco. Reinício/redeploy encerra sessões; não escale para múltiplas réplicas sem armazenamento compartilhado seguro de sessão/cache.
+- A sessão exige consentimento confirmado para `User.Read` e `Mail.Read` e valida o perfil em Microsoft Graph. A tela identifica a conta conectada. Requisições de escrita do navegador exigem origem do domínio configurado.
+- **Importante:** o login e a autorização delegada estão preparados, mas buscar, paginar e analisar mensagens do Outlook via Graph ainda não está implementado. O estado conectado não significa que e-mails foram lidos. A interface de importação manual continua separada.
+- O servidor deve estar servido exclusivamente por HTTPS público; para outro domínio, altere `DUARTE_PUBLIC_BASE_URL` e atualize a URL de redirecionamento no Entra para coincidir exatamente. Não use endereço do Duarte Mailing.
 
 ## Arquitetura recomendada para produção
 

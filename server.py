@@ -22,6 +22,84 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 
 ROOT=Path(__file__).parent
 MAX_UPLOAD=25*1024*1024
+# Microsoft Entra ID (delegated OAuth/OIDC)
+import secrets, threading, urllib.parse
+from http.cookies import SimpleCookie
+
+AUTH_SCOPES=['User.Read','Mail.Read']
+SESSION_TTL=8*60*60
+_auth_sessions={}
+_auth_flows={}
+_auth_lock=threading.RLock()
+
+def _auth_settings():
+    base=os.environ.get('DUARTE_PUBLIC_BASE_URL','https://duartelats-production.up.railway.app').strip().rstrip('/')
+    p=urlparse(base)
+    local=p.hostname in ('localhost','127.0.0.1')
+    valid_base=(p.scheme=='https' or (local and p.scheme=='http')) and bool(p.netloc) and not p.query and not p.fragment
+    required=os.environ.get('DUARTE_AUTH_REQUIRED','').lower()=='true' or bool(os.environ.get('RAILWAY_ENVIRONMENT'))
+    provided=any(os.environ.get(k,'').strip() for k in ('DUARTE_ENTRA_TENANT_ID','DUARTE_ENTRA_CLIENT_ID','DUARTE_ENTRA_CLIENT_SECRET'))
+    values={'tenant':os.environ.get('DUARTE_ENTRA_TENANT_ID','').strip(),'client_id':os.environ.get('DUARTE_ENTRA_CLIENT_ID','').strip(),'client_secret':os.environ.get('DUARTE_ENTRA_CLIENT_SECRET','').strip(),'session_secret':os.environ.get('DUARTE_SESSION_SECRET',''),'base':base,'redirect':base+'/auth/callback','required':required,'provided':provided,'valid_base':valid_base}
+    try:
+        import msal
+        values['msal_available']=True
+    except ImportError:
+        values['msal_available']=False
+    values['configured']=bool(values['tenant'] and values['client_id'] and values['client_secret'] and len(values['session_secret'])>=32 and valid_base and values['msal_available'])
+    values['enabled']=values['configured'] or required or provided
+    return values
+
+def _msal_app(cache=None):
+    import msal
+    cfg=_auth_settings()
+    if not cfg['configured']: raise RuntimeError('A autenticação Microsoft ainda não está configurada pela TI.')
+    return msal.ConfidentialClientApplication(cfg['client_id'],authority='https://login.microsoftonline.com/'+cfg['tenant'],client_credential=cfg['client_secret'],token_cache=cache)
+
+def _cookie(handler,name):
+    jar=SimpleCookie()
+    try: jar.load(handler.headers.get('Cookie',''))
+    except Exception: return ''
+    return jar[name].value if name in jar else ''
+
+def _session_key(sid):
+    secret=os.environ.get('DUARTE_SESSION_SECRET','').encode()
+    return hmac.new(secret,sid.encode(),hashlib.sha256).hexdigest()
+
+def _get_session(handler):
+    sid=_cookie(handler,'duarte_session')
+    if not sid:return None
+    key=_session_key(sid)
+    now=time.time()
+    with _auth_lock:
+        item=_auth_sessions.get(key)
+        if not item or item['expires']<now:
+            _auth_sessions.pop(key,None);return None
+        item['expires']=now+SESSION_TTL
+        return item
+
+def _verify_id_token_nonce(result, expected):
+    # MSAL validates the OIDC ID token and flow state while exchanging the code.
+    # Compare the nonce from the claims validated by MSAL with our one-time value.
+    claims=result.get('id_token_claims') or ''
+    if isinstance(claims,str):
+        try:claims=json.loads(claims)
+        except Exception:claims={}
+    expected=expected or ''
+    returned=claims.get('nonce','') if isinstance(claims,dict) else ''
+    if not expected or not returned or not hmac.compare_digest(str(returned),str(expected)):
+        raise RuntimeError('A validação de segurança do login Microsoft falhou. Inicie novamente.')
+
+def _graph_profile(token):
+    req=Request('https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName',headers={'Authorization':'Bearer '+token,'Accept':'application/json'})
+    try:
+        with urlopen(req,timeout=20) as response:return json.loads(response.read(1024*1024))
+    except HTTPError as exc:
+        if exc.code in (401,403):raise RuntimeError('A Microsoft recusou o acesso ao perfil. Confira o consentimento User.Read e Mail.Read no Entra.')
+        raise RuntimeError('Não foi possível confirmar o perfil Microsoft no Graph.')
+    except (URLError,TimeoutError):raise RuntimeError('Não foi possível conectar ao Microsoft Graph para confirmar o login.')
+
+AUTH_SETUP_HTML='<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Configuração necessária · Duarte Relats</title><body style="font:16px/1.55 system-ui;max-width:760px;margin:8vh auto;padding:24px;color:#14233d"><h1 style="color:#001e57">Login Microsoft ainda não configurado</h1><p>Por segurança, o acesso ao Duarte Relats está bloqueado até a TI concluir a configuração do Microsoft Entra ID no serviço.</p><p>Cadastre no Entra uma plataforma <b>Web</b> com esta URI de redirecionamento:</p><pre style="padding:14px;background:#f2f5f9;overflow-wrap:anywhere">https://duartelats-production.up.railway.app/auth/callback</pre><p>Depois configure, somente nas variáveis protegidas do Railway: <code>DUARTE_ENTRA_TENANT_ID</code>, <code>DUARTE_ENTRA_CLIENT_ID</code>, <code>DUARTE_ENTRA_CLIENT_SECRET</code> e <code>DUARTE_SESSION_SECRET</code> (segredo aleatório com ao menos 32 caracteres), além de <code>DUARTE_AUTH_REQUIRED=true</code> e <code>DUARTE_PUBLIC_BASE_URL=https://duartelats-production.up.railway.app</code>.</p><p>Permissões delegadas mínimas: <code>User.Read</code> e <code>Mail.Read</code>. O login não significa que a leitura de mensagens ou a geração via Graph já esteja implementada.</p><p>Não coloque segredos no GitHub, no navegador ou nesta conversa. Consulte o README para instruções.</p></body></html>'
+
 
 def json_bytes(obj): return json.dumps(obj,ensure_ascii=False,default=str).encode()
 def norm(x): return re.sub(r'\s+',' ',str(x or '')).strip()
@@ -360,24 +438,106 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self,*args):pass
     def send_json(self,obj,status=200):
         b=json_bytes(obj);self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b)
+    def _secure_headers(self):
+        self.send_header('X-Content-Type-Options','nosniff')
+        self.send_header('X-Frame-Options','DENY')
+        self.send_header('Referrer-Policy','no-referrer')
+        self.send_header('Cache-Control','no-store')
+        super().end_headers()
+    def end_headers(self): self._secure_headers()
+    def _redirect(self,location,cookie=None):
+        self.send_response(302);self.send_header('Location',location)
+        if cookie:self.send_header('Set-Cookie',cookie)
+        self.end_headers()
+    def _setup_page(self,status=503):
+        b=AUTH_SETUP_HTML.encode('utf-8');self.send_response(status);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b)
+    def _origin_allowed(self):
+        cfg=_auth_settings(); origin=self.headers.get('Origin','').rstrip('/')
+        return bool(origin and hmac.compare_digest(origin,cfg['base']))
+    def _login_callback(self):
+        cfg=_auth_settings()
+        if not cfg['configured']:return self._setup_page()
+        params=urllib.parse.parse_qs(urlparse(self.path).query)
+        state=(params.get('state') or [''])[0];cookie=_oauth_cookie(self)
+        if not state or not cookie:return self.send_json({'error':'Retorno de login inválido. Inicie o login novamente.'},400)
+        with _auth_lock:entry=_auth_flows.pop(state,None)
+        if not entry or entry['expires']<time.time() or not hmac.compare_digest(entry['cookie'],cookie):
+            return self.send_json({'error':'A solicitação de login expirou ou não corresponde a esta sessão. Tente novamente.'},400)
+        if (params.get('error') or [''])[0]:return self.send_json({'error':'Login Microsoft cancelado ou recusado. Verifique as permissões com a TI e tente novamente.'},400)
+        try:
+            cache=__import__('msal').SerializableTokenCache();app=_msal_app(cache)
+            result=app.acquire_token_by_auth_code_flow(entry['flow'],{k:v[0] for k,v in params.items()})
+            if 'access_token' not in result:raise RuntimeError('A Microsoft não concluiu a autenticação. Confira o registro do aplicativo e o consentimento no Entra.')
+            _verify_id_token_nonce(result,entry['flow'].get('nonce',''))
+            granted_raw=result.get('scope',[])
+            granted={x.lower() for x in (granted_raw.split() if isinstance(granted_raw,str) else granted_raw)}
+            if not {'user.read','mail.read'}.issubset(granted):raise RuntimeError('O consentimento delegado User.Read e Mail.Read não foi confirmado. Peça consentimento autorizado no Entra.')
+            profile=_graph_profile(result['access_token'])
+            username=profile.get('mail') or profile.get('userPrincipalName') or result.get('id_token_claims',{}).get('preferred_username','')
+            sid=secrets.token_urlsafe(32)
+            session={'token_cache':cache.serialize(),'username':username,'display_name':profile.get('displayName') or username,'expires':time.time()+SESSION_TTL}
+            with _auth_lock:_auth_sessions[_session_key(sid)]=session
+            secure='; Secure' if cfg['base'].startswith('https://') else ''
+            return self._redirect('/',f'duarte_session={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}{secure}')
+        except Exception as exc:
+            msg=str(exc) if isinstance(exc,RuntimeError) else 'O login Microsoft não foi concluído. Confira a configuração do Entra e tente novamente.'
+            return self.send_json({'error':msg},401)
     def do_GET(self):
-        if self.path=='/api/health':return self.send_json({'ok':True,'mode':'local-file-import','auth':'not-configured','graph':'not-configured','calls':'future','ai_configured':azure_ai_configured()})
-        if self.path=='/api/ai/status':return self.send_json({'configured':azure_ai_configured(),'provider':'Azure AI Foundry','auth_required':bool(os.environ.get('DUARTE_AI_ACCESS_TOKEN')),'attachments_supported':False})
+        path=urlparse(self.path).path
+        cfg=_auth_settings()
+        if path=='/api/health':return self.send_json({'ok':True,'mode':'local-file-import','auth':'enabled' if cfg['enabled'] and cfg['configured'] else ('required_not_configured' if cfg['enabled'] else 'local_only'),'graph_mail_read':'not_implemented','calls':'future','ai_configured':azure_ai_configured()})
+        if path=='/auth/login':
+            if not cfg['configured']:return self._setup_page()
+            try:
+                nonce=secrets.token_urlsafe(24);app=_msal_app();flow=app.initiate_auth_code_flow(scopes=AUTH_SCOPES,redirect_uri=cfg['redirect'],prompt='select_account',nonce=nonce)
+                state=flow.get('state')
+                if not state:raise RuntimeError('Não foi possível iniciar o login Microsoft.')
+                cookie=secrets.token_urlsafe(24)
+                with _auth_lock:
+                    now=time.time()
+                    for k,v in list(_auth_flows.items()):
+                        if v['expires']<now:_auth_flows.pop(k,None)
+                    if len(_auth_flows)>=2048:_auth_flows.pop(next(iter(_auth_flows)))
+                    _auth_flows[state]={'flow':flow,'cookie':cookie,'expires':now+600}
+                secure='; Secure' if cfg['base'].startswith('https://') else ''
+                return self._redirect(flow['auth_uri'],f'duarte_oauth={cookie}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=600{secure}')
+            except Exception:return self.send_json({'error':'Não foi possível iniciar o login Microsoft. Verifique a configuração do Entra.'},503)
+        if path=='/auth/callback':return self._login_callback()
+        if path=='/api/auth/status':
+            if cfg['enabled'] and not cfg['configured']:return self.send_json({'error':'Autenticação corporativa ainda não configurada.'},503)
+            session=_get_session(self)
+            if cfg['enabled'] and not session:return self.send_json({'error':'Entre com sua conta Microsoft.'},401)
+            return self.send_json({'enabled':cfg['enabled'],'authenticated':bool(session),'display_name':session.get('display_name') if session else None,'email':session.get('username') if session else None,'mail_read_authorized':bool(session),'mail_read_implemented':False})
+        if path=='/auth/logout':return self.send_json({'error':'Use POST para sair.'},405)
+        if cfg['enabled'] and not cfg['configured']:return self._setup_page()
+        if cfg['enabled'] and not _get_session(self):return self._redirect('/auth/login')
+        if path=='/api/ai/status':return self.send_json({'configured':azure_ai_configured(),'provider':'Azure AI Foundry','auth_required':bool(os.environ.get('DUARTE_AI_ACCESS_TOKEN')),'attachments_supported':False})
         return super().do_GET()
     def do_POST(self):
-        if not self.path.startswith('/api/'):return self.send_error(404)
-        if self.path not in ('/api/emails','/api/matrix','/api/export/xlsx','/api/export/pdf','/api/analyze'):
+        path=urlparse(self.path).path;cfg=_auth_settings()
+        if path=='/auth/logout':
+            sid=_session_cookie(self)
+            with _auth_lock:_auth_sessions.pop(_session_key(sid),None) if sid else None
+            secure='; Secure' if cfg['base'].startswith('https://') else ''
+            return self._redirect('/auth/login',f'duarte_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}')
+        if not path.startswith('/api/'):return self.send_error(404)
+        if cfg['enabled'] and not cfg['configured']:return self.send_json({'error':'Autenticação Microsoft ainda não configurada.'},503)
+        session=_get_session(self) if cfg['enabled'] else None
+        if cfg['enabled'] and not session:return self.send_json({'error':'Entre com sua conta Microsoft.'},401)
+        if cfg['enabled'] and not self._origin_allowed():return self.send_json({'error':'Origem da solicitação não autorizada.'},403)
+        if path not in ('/api/emails','/api/matrix','/api/export/xlsx','/api/export/pdf','/api/analyze'):
             return self.send_json({'error':'Operação não encontrada'},404)
+        self.path=path
         try:
             length=int(self.headers.get('Content-Length','0'))
             limit=5*1024*1024 if self.path=='/api/analyze' else MAX_UPLOAD+1024*1024
             if length>limit:raise ValueError('A solicitação excede o limite permitido.')
             body=self.rfile.read(length)
-            if self.path=='/api/analyze':
+            if path=='/api/analyze':
                 gate=os.environ.get('DUARTE_AI_ACCESS_TOKEN','')
                 presented=self.headers.get('Authorization','')
                 supplied=presented[7:] if presented.startswith('Bearer ') else ''
-                if not gate or not hmac.compare_digest(gate,supplied):return self.send_json({'error':'Acesso à análise não autorizado ou não configurado.'},401)
+                if not (session if cfg['enabled'] else (gate and hmac.compare_digest(gate,supplied))):return self.send_json({'error':'Acesso à análise não autorizado ou não configurado.'},401)
                 if not azure_ai_configured():return self.send_json({'error':'Azure AI Foundry não está configurado no servidor.'},503)
                 fields,files=parse_multipart_form(self.headers.get('Content-Type',''),body)
                 if fields.get('consent')!='true':raise ValueError('Confirme que o conteúdo será enviado ao Azure AI Foundry autorizado pela organização.')
@@ -385,15 +545,15 @@ class Handler(SimpleHTTPRequestHandler):
                 if not items:raise ValueError('Selecione as mensagens para analisar.')
                 result=analyze_mail_files(items,fields.get('start',''),fields.get('end',''))
                 return self.send_json({'analysis':result,'source':'Arquivos enviados nesta análise; não armazenados','status':'completed'})
-            if self.path in ('/api/export/xlsx','/api/export/pdf'):
+            if path in ('/api/export/xlsx','/api/export/pdf'):
                 payload=json.loads(body or b'{}')
-                if payload.get('analysis') and not hmac.compare_digest(os.environ.get('DUARTE_AI_ACCESS_TOKEN',''),self.headers.get('X-Duarte-Access-Token','')):
+                if payload.get('analysis') and not (session if cfg['enabled'] else (os.environ.get('DUARTE_AI_ACCESS_TOKEN','') and hmac.compare_digest(os.environ.get('DUARTE_AI_ACCESS_TOKEN',''),self.headers.get('X-Duarte-Access-Token','')))):
                     return self.send_json({'error':'Acesso à exportação executiva não autorizado.'},401)
-                content=make_xlsx(payload) if self.path.endswith('xlsx') else make_pdf(payload)
+                content=make_xlsx(payload) if path.endswith('xlsx') else make_pdf(payload)
                 fname='DuarteReports_Relatorio.xlsx' if self.path.endswith('xlsx') else 'DuarteReports_Relatorio.pdf'
                 self.send_response(200);self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if fname.endswith('xlsx') else 'application/pdf');self.send_header('Content-Disposition',f'attachment; filename="{fname}"');self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content);return
             fields,files=parse_multipart_form(self.headers.get('Content-Type',''),body)
-            if self.path=='/api/emails':
+            if path=='/api/emails':
                 items=files.get('files',[])
                 if not items:raise ValueError('Selecione ao menos um arquivo para importar.')
                 allrows=[];names=[]
