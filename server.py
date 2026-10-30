@@ -61,18 +61,12 @@ def _cookie(handler,name):
     except Exception: return ''
     return jar[name].value if name in jar else ''
 
-def _oauth_cookie(handler):
-    return _cookie(handler,'duarte_oauth')
-
-def _session_cookie(handler):
-    return _cookie(handler,'duarte_session')
-
 def _session_key(sid):
     secret=os.environ.get('DUARTE_SESSION_SECRET','').encode()
     return hmac.new(secret,sid.encode(),hashlib.sha256).hexdigest()
 
 def _get_session(handler):
-    sid=_session_cookie(handler)
+    sid=_cookie(handler,'duarte_session')
     if not sid:return None
     key=_session_key(sid)
     now=time.time()
@@ -85,7 +79,7 @@ def _get_session(handler):
 
 def _verify_id_token_nonce(result, expected):
     # MSAL validates the OIDC ID token and flow state while exchanging the code.
-    # Compare the nonce from the claims validated by MSAL with the one-time value generated in the flow.
+    # Compare the nonce from the claims validated by MSAL with our one-time value.
     claims=result.get('id_token_claims') or ''
     if isinstance(claims,str):
         try:claims=json.loads(claims)
@@ -104,7 +98,15 @@ def _graph_profile(token):
         raise RuntimeError('Não foi possível confirmar o perfil Microsoft no Graph.')
     except (URLError,TimeoutError):raise RuntimeError('Não foi possível conectar ao Microsoft Graph para confirmar o login.')
 
+AUTH_LOGIN_HTML = """<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#001E57"><title>Entrar · Duarte Relats</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(ellipse at 15% 15%,#e6eef9 0,transparent 42%),linear-gradient(135deg,#f7f9fc,#edf2f8);font:15px/1.55 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;color:#14233d}.card{width:min(100%,440px);padding:38px;background:#fff;border:1px solid #e5eaf1;border-radius:18px;box-shadow:0 22px 70px #0a25401a}.brand{display:flex;align-items:center;gap:12px;margin-bottom:34px}.mark{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;color:#001e57;background:linear-gradient(135deg,#ffc36e,#ff9200);font-size:21px;font-weight:850}.brand strong{display:block;color:#001e57;font-size:17px}.brand small{color:#718096;font-size:10px;letter-spacing:1.5px}.eyebrow{color:#a36a1e;font-size:10px;font-weight:750;letter-spacing:1.5px}h1{font-size:27px;line-height:1.2;letter-spacing:-.5px;color:#001e57;margin:8px 0}p{color:#68788f;font-size:13px;margin:8px 0 22px}.ms{display:flex;align-items:center;gap:11px}.microsoft{width:20px;height:20px;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px}.microsoft i:nth-child(1){background:#f35325}.microsoft i:nth-child(2){background:#81bc06}.microsoft i:nth-child(3){background:#05a6f0}.microsoft i:nth-child(4){background:#ffba08}.button{width:100%;min-height:48px;display:flex;align-items:center;justify-content:center;gap:11px;border:0;border-radius:8px;background:#001e57;color:#fff;text-decoration:none;font-size:14px;font-weight:700;transition:background .15s}.button:hover{background:#0a3563}.button:focus-visible{outline:3px solid #ff9200;outline-offset:3px}.note{margin-top:20px;padding:12px 13px;border:1px solid #e7edf5;border-radius:9px;background:#f8fafc;color:#718096;font-size:11px}.foot{margin-top:24px;text-align:center;color:#94a0b1;font-size:10px}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+</style></head><body><main class="card"><div class="brand"><span class="mark">D</span><span><strong>Duarte Relats</strong><small>GESTÃO OPERACIONAL</small></span></div><div class="eyebrow">ACESSO CORPORATIVO</div><h1>Entre na sua conta</h1><p>Use sua conta Microsoft corporativa autorizada para acessar o Duarte Relats.</p><a class="button" href="/auth/login"><span class="microsoft" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Entrar com Microsoft</a><div class="note">O acesso é validado pela Microsoft. O Duarte Relats não recebe nem armazena sua senha.</div><div class="foot">Duarte Relats · Acesso protegido</div></main></body></html>"""
+
 AUTH_SETUP_HTML='<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Configuração necessária · Duarte Relats</title><body style="font:16px/1.55 system-ui;max-width:760px;margin:8vh auto;padding:24px;color:#14233d"><h1 style="color:#001e57">Login Microsoft ainda não configurado</h1><p>Por segurança, o acesso ao Duarte Relats está bloqueado até a TI concluir a configuração do Microsoft Entra ID no serviço.</p><p>Cadastre no Entra uma plataforma <b>Web</b> com esta URI de redirecionamento:</p><pre style="padding:14px;background:#f2f5f9;overflow-wrap:anywhere">https://duartelats-production.up.railway.app/auth/callback</pre><p>Depois configure, somente nas variáveis protegidas do Railway: <code>DUARTE_ENTRA_TENANT_ID</code>, <code>DUARTE_ENTRA_CLIENT_ID</code>, <code>DUARTE_ENTRA_CLIENT_SECRET</code> e <code>DUARTE_SESSION_SECRET</code> (segredo aleatório com ao menos 32 caracteres), além de <code>DUARTE_AUTH_REQUIRED=true</code> e <code>DUARTE_PUBLIC_BASE_URL=https://duartelats-production.up.railway.app</code>.</p><p>Permissões delegadas mínimas: <code>User.Read</code> e <code>Mail.Read</code>. O login não significa que a leitura de mensagens ou a geração via Graph já esteja implementada.</p><p>Não coloque segredos no GitHub, no navegador ou nesta conversa. Consulte o README para instruções.</p></body></html>'
+AUTH_ERROR_HTML = """<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Não foi possível entrar · Duarte Relats</title><body style="font:15px/1.6 system-ui;max-width:620px;margin:10vh auto;padding:24px;color:#14233d"><h1 style="color:#001e57">Não foi possível concluir o login</h1><p>{message}</p><p><a href="/login" style="display:inline-block;background:#001e57;color:#fff;padding:11px 16px;border-radius:7px;text-decoration:none">Voltar para entrar</a></p><p style="color:#718096;font-size:12px">Se o problema persistir, envie à TI o horário da tentativa e os registros do serviço. Não envie códigos da URL, cookies ou segredos.</p></body></html>"""
+
 
 
 def json_bytes(obj): return json.dumps(obj,ensure_ascii=False,default=str).encode()
@@ -464,7 +466,7 @@ class Handler(SimpleHTTPRequestHandler):
         cfg=_auth_settings()
         if not cfg['configured']:return self._setup_page()
         params=urllib.parse.parse_qs(urlparse(self.path).query)
-        state=(params.get('state') or [''])[0];cookie=_oauth_cookie(self)
+        state=(params.get('state') or [''])[0];cookie=_cookie(self,'duarte_oauth')
         if not state or not cookie:return self.send_json({'error':'Retorno de login inválido. Inicie o login novamente.'},400)
         with _auth_lock:entry=_auth_flows.pop(state,None)
         if not entry or entry['expires']<time.time() or not hmac.compare_digest(entry['cookie'],cookie):
@@ -487,20 +489,19 @@ class Handler(SimpleHTTPRequestHandler):
             return self._redirect('/',f'duarte_session={sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}{secure}')
         except Exception as exc:
             msg=str(exc) if isinstance(exc,RuntimeError) else 'O login Microsoft não foi concluído. Confira a configuração do Entra e tente novamente.'
-            return self.send_json({'error':msg},401)
+            print(f'Microsoft OAuth callback failed: {type(exc).__name__}',flush=True)
+            b=AUTH_ERROR_HTML.format(message=html.escape(msg)).encode('utf-8')
+            self.send_response(401);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b);return
     def do_GET(self):
         path=urlparse(self.path).path
         cfg=_auth_settings()
         if path=='/api/health':return self.send_json({'ok':True,'mode':'local-file-import','auth':'enabled' if cfg['enabled'] and cfg['configured'] else ('required_not_configured' if cfg['enabled'] else 'local_only'),'graph_mail_read':'not_implemented','calls':'future','ai_configured':azure_ai_configured()})
+        if path=='/login':
+            b=AUTH_LOGIN_HTML.encode('utf-8');self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b);return
         if path=='/auth/login':
             if not cfg['configured']:return self._setup_page()
             try:
-                app=_msal_app()
-                flow=app.initiate_auth_code_flow(
-                    scopes=AUTH_SCOPES,
-                    redirect_uri=cfg['redirect'],
-                    prompt='select_account'
-                )
+                nonce=secrets.token_urlsafe(24);app=_msal_app();flow=app.initiate_auth_code_flow(scopes=AUTH_SCOPES,redirect_uri=cfg['redirect'],prompt='select_account',nonce=nonce)
                 state=flow.get('state')
                 if not state:raise RuntimeError('Não foi possível iniciar o login Microsoft.')
                 cookie=secrets.token_urlsafe(24)
@@ -512,8 +513,9 @@ class Handler(SimpleHTTPRequestHandler):
                     _auth_flows[state]={'flow':flow,'cookie':cookie,'expires':now+600}
                 secure='; Secure' if cfg['base'].startswith('https://') else ''
                 return self._redirect(flow['auth_uri'],f'duarte_oauth={cookie}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=600{secure}')
-            except Exception:
-                return self.send_json({'error':'Não foi possível iniciar o login Microsoft. Verifique a configuração do Entra e os logs do serviço.'},503)
+            except Exception as exc:
+                print(f'Microsoft OAuth start failed: {type(exc).__name__}',flush=True)
+                return self._setup_page(503)
         if path=='/auth/callback':return self._login_callback()
         if path=='/api/auth/status':
             if cfg['enabled'] and not cfg['configured']:return self.send_json({'error':'Autenticação corporativa ainda não configurada.'},503)
@@ -522,16 +524,16 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({'enabled':cfg['enabled'],'authenticated':bool(session),'display_name':session.get('display_name') if session else None,'email':session.get('username') if session else None,'mail_read_authorized':bool(session),'mail_read_implemented':False})
         if path=='/auth/logout':return self.send_json({'error':'Use POST para sair.'},405)
         if cfg['enabled'] and not cfg['configured']:return self._setup_page()
-        if cfg['enabled'] and not _get_session(self):return self._redirect('/auth/login')
+        if cfg['enabled'] and not _get_session(self):return self._redirect('/login')
         if path=='/api/ai/status':return self.send_json({'configured':azure_ai_configured(),'provider':'Azure AI Foundry','auth_required':bool(os.environ.get('DUARTE_AI_ACCESS_TOKEN')),'attachments_supported':False})
         return super().do_GET()
     def do_POST(self):
         path=urlparse(self.path).path;cfg=_auth_settings()
         if path=='/auth/logout':
-            sid=_session_cookie(self)
+            sid=_cookie(self,'duarte_session')
             with _auth_lock:_auth_sessions.pop(_session_key(sid),None) if sid else None
             secure='; Secure' if cfg['base'].startswith('https://') else ''
-            return self._redirect('/auth/login',f'duarte_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}')
+            return self._redirect('/login',f'duarte_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}')
         if not path.startswith('/api/'):return self.send_error(404)
         if cfg['enabled'] and not cfg['configured']:return self.send_json({'error':'Autenticação Microsoft ainda não configurada.'},503)
         session=_get_session(self) if cfg['enabled'] else None
