@@ -1,126 +1,97 @@
-# DUARTE REPORTS — versão local executável
+# Duarte Relats — pacote integrado
 
-Aplicação web local para leitura de arquivos selecionados, análise de metadados, importação de matriz e geração de Excel/PDF. Base visual: tons Duarte (#001E57, #0A2540 e #FF9200), estrutura do HTML de referência adaptada para relatórios. O HTML original depende de estilos/recursos não incluídos no anexo; nenhuma identidade visual externa ausente foi presumida.
+Aplicação web de conferência operacional para importação de e-mails exportados e matrizes, com geração de Excel/PDF. A interface começa com uma tela de acesso Microsoft quando o serviço é configurado para autenticação corporativa. Nenhum dado de exemplo é carregado.
 
-## O que está realmente implementado
+## O que este pacote entrega
 
-- Dashboard inicia sem números fictícios.
-- Importação local explícita de mensagens `.eml` individuais e arquivos `.csv`, `.xlsx` ou `.xlsm` com metadados. Limite: 25 MB por arquivo. `.pst` e `.msg` não são suportados nesta versão.
-- Datas inicial/final aplicadas localmente; fuso selecionável/registrado para explicitar a leitura, mas datas sem offset em CSV/XLSX não são convertidas automaticamente.
-- Campos de e-mail aceitos por cabeçalhos reconhecidos: data/data-hora, remetente/from, destinatários/to/cc, assunto/subject, direção/direction, cliente/operadora e identificadores de mensagem/conversa. A associação de cliente só usa coluna explícita; não deduz por assunto/domínio/destinatário.
-- Deduplicação por Message-ID, ou hash de data, remetente, destinatários e assunto. Cada resposta segue sendo mensagem separada; thread/conversa não é tratada como unidade de mensagem.
-- Importação `.xlsx`/`.xlsm` de matriz sem alterar o original, identifica abas e cabeçalhos COD/CLIENTE/OPERADORA e exibe registros, contagens e hash SHA-256. Leitura de fórmulas usa valores salvos no workbook. Se valores dependem de links/fórmulas externas sem cache atualizado, resultados podem faltar; validar no Excel fonte.
-- Semáforo provisório por datas em colunas com “contato”; limites ajustáveis apenas na interface desta sessão. Não constitui regra operacional aprovada nem tem histórico persistente.
-- Exportação `.xlsx` (abas resumo, detalhamento, consolidado, matriz/revisão e metodologia) e PDF narrativo derivados do conteúdo importado. O sistema não guarda arquivos após processar.
-- Integração opcional com Azure AI Foundry para análise executiva de corpos de mensagens, habilitada apenas quando o administrador configura endpoint, deployment, chave, gate de acesso e flag; consentimento explícito por execução. A resposta exige estrutura JSON completa e IDs de fontes verificáveis em todas as conclusões estruturadas. Limite atual: 40 mensagens, 12 mil caracteres por mensagem e 120 mil caracteres no total; os limites são validados sem truncar mensagens, sem paginação/retomada, anexos ou análise parcial.
-- A análise só é possível para `.eml` e CSV/XLSX que tenham coluna `corpo` ou `body`. A interface mostra análise JSON na tela e inclui a saída validada em PDF/Excel quando exportada; o resultado é transitório na sessão, sem histórico ou armazenamento.
-- Aba de ligações futura, sem dados ou métricas fictícias.
+- Painel sem indicadores fictícios; leitura de `.eml`, `.csv`, `.xlsx` e `.xlsm` de e-mails/metadados.
+- Leitura de matriz `.xlsx`/`.xlsm` sem regravar o original, com contagens e hash do conteúdo.
+- Exportação de relatório em `.xlsx` e `.pdf`.
+- Login web Microsoft Entra ID, validação do fluxo OIDC/MSAL, sessão opaca em cookie `HttpOnly`, `Secure` em HTTPS, `SameSite=Lax`, expiração e logout.
+- Restrição de login a endereços explicitamente permitidos por `DUARTE_ALLOWED_USERS`.
+- Integração opcional de análise via Azure AI Foundry; depende de configuração aprovada e habilitação explícita.
+- Aba de ligações identificada como futura, sem dados simulados.
 
-## Não configurado / não afirmar como funcional
+## Limites importantes
 
-O fluxo web de login Microsoft Entra ID/OIDC está implementado neste pacote, mas só fica ativo após configuração dos segredos e consentimentos pela TI. A leitura de mensagens via Microsoft Graph, seleção de período/caixa e importação automática do Outlook ainda NÃO estão implementadas. Google OAuth/OIDC, persistência compartilhada, auditoria central, armazenamento seguro, API do Duarte Performance e integração telefônica permanecem não configurados. A integração de IA não conecta ao Outlook e não substitui identidade/autorização corporativa. O gate `DUARTE_AI_ACCESS_TOKEN` é só uma barreira técnica compartilhada, não login, sessão, proteção multiusuário ou controle de autorização. A análise depende de endpoint/deployment/chave válidos, serviço acessível e aprovação da TI/DPO; nenhum desses itens está confirmado neste pacote.
+**Este pacote não deve ser tratado como sistema corporativo completo de produção.** Sessões e cache MSAL ficam em memória do processo: reinício encerra sessões e múltiplas réplicas exigem armazenamento compartilhado seguro. Ainda faltam persistência multiusuário, auditoria central, rate limiting, CSRF robusto, gestão de papéis e análise formal de privacidade/retensão.
 
-A planilha de modelo enviada inclui “Resumo Executivo”, “MedLight — Clínica MedLight (1010)” e “EvCiti — Centro de Infusão (1044)”; os detalhes afirmam “Nenhum e-mail encontrado para este cliente no período” e totais apresentados são zero. São estados do modelo, não dados operacionais atuais. PDF de referência é do Duarte Transcribe e serve apenas como exemplo de organização narrativa.
+O login Microsoft não conecta nem lê o Outlook. Microsoft Graph para listar mensagens, caixas, paginação, anexos e tratamento de limites ainda não está implementado. Para o login, a permissão delegada mínima é `User.Read`; não mantenha `Mail.Read` apenas por causa desta versão. Não há integração Google, Duarte Performance ou telefonia.
+
+A IA é desativada por padrão e só analisa arquivos selecionados. O corpo das mensagens é enviado ao endpoint Azure configurado; obtenha aprovação organizacional antes de usar dados reais. Anexos não são analisados. Não use o gate compartilhado de IA como substituto de autenticação corporativa. Valide toda saída da IA contra as fontes originais.
 
 ## Deploy no Railway
 
-O log enviado informa que o Railway recebeu **somente `README.md`** (`The app contents that Railpack analyzed contains: ./ README.md`). Portanto, este erro ainda não é causado pelo código Python: o commit/branch/pasta de origem configurados no serviço não incluem os arquivos da aplicação. O Railway precisa receber, na raiz da origem configurada, pelo menos `server.py`, `index.html`, `requirements.txt` e este `README.md`.
+1. Coloque **o conteúdo desta pasta** na raiz do repositório conectado ao serviço Railway, ou configure o Root Directory para a pasta do projeto. Confirme que `server.py`, `index.html`, `requirements.txt`, `Procfile` e `.python-version` estão no commit efetivamente implantado.
+2. Configure as variáveis protegidas listadas abaixo no serviço correto. Não as inclua no GitHub, no chat nem em capturas.
+3. O callback no Entra precisa ser plataforma **Web** e corresponder exatamente a `https://duartelats-production.up.railway.app/auth/callback`. Se o domínio mudar, atualize tanto o Entra quanto `DUARTE_PUBLIC_BASE_URL`.
+4. Faça deploy e confirme nos logs a instalação das dependências e a inicialização do serviço. Teste `/api/health`; ele não revela credenciais. Acesse `/` para ver a tela de entrada e então escolha **Entrar com Microsoft**.
+5. Se houver erro no retorno, confira os logs de runtime logo após nova tentativa. Não compartilhe URL com `code`/`state`, cookies, tokens ou valores de variáveis.
 
-1. Extraia o pacote e envie **os arquivos de dentro da pasta do projeto** para a raiz do repositório GitHub conectado ao Railway. Não envie apenas o README e não deixe os arquivos dentro de uma subpasta, a menos que configure o Root Directory do Railway para essa subpasta.
-2. Confirme no GitHub que `server.py`, `requirements.txt`, `Procfile`, `.python-version` e `index.html` aparecem na raiz do branch monitorado pelo Railway; faça commit/push.
-3. No Railway, confira em **Settings → Source** se o repositório, branch e Root Directory são os mesmos onde esses arquivos foram publicados. Para arquivos na raiz, deixe o Root Directory vazio ou `/`.
-4. O `Procfile` inicia `python server.py`; o `requirements.txt` precisa ficar junto ao servidor e lista `openpyxl` e `reportlab`. O servidor não depende do módulo `cgi`; o envio multipart usa a biblioteca padrão do Python. A configuração `.python-version` seleciona Python 3.12 e `PORT` é lida do ambiente. Faça novo deploy após confirmar o commit.
-5. O log seguinte deve avançar da etapa de preparação do build para instalação das dependências e início do serviço. Depois, verifique o endpoint `/api/health`.
+### Microsoft Entra ID
 
-Não basta criar os arquivos localmente: é necessário que estejam commitados e enviados ao repositório exato que o serviço Railway está observando. O pacote atualizado inclui login Microsoft; ele exige configuração de Entra e Railway descrita abaixo. A leitura de mensagens do Graph ainda não existe. Mantenha o serviço bloqueado até concluir o login e validar o controle de acesso.
+- Registre um aplicativo para o locatário corporativo e adicione URI de retorno como plataforma Web.
+- Configure a permissão **delegada** Microsoft Graph `User.Read` para a identidade do usuário; solicite consentimento conforme a política da organização.
+- Acesso é permitido somente aos e-mails normalizados que estiverem na lista `DUARTE_ALLOWED_USERS`.
+- Este fluxo não concede acesso de leitura de e-mail e não implementa Graph.
+
+### Variáveis obrigatórias no Railway
+
+| Variável | Valor |
+|---|---|
+| `DUARTE_ENTRA_TENANT_ID` | ID do locatário no Entra |
+| `DUARTE_ENTRA_CLIENT_ID` | ID do aplicativo (cliente) |
+| `DUARTE_ENTRA_CLIENT_SECRET` | Valor do segredo de cliente, não seu ID |
+| `DUARTE_SESSION_SECRET` | Segredo aleatório criptograficamente forte com pelo menos 32 caracteres |
+| `DUARTE_AUTH_REQUIRED` | `true` |
+| `DUARTE_PUBLIC_BASE_URL` | URL HTTPS pública do serviço |
+| `DUARTE_ALLOWED_USERS` | Lista separada por vírgula de e-mails autorizados, sem espaços excedentes |
+
+Gere o segredo de sessão localmente no computador de TI e cole-o diretamente no cofre de variáveis do serviço. Não reutilize o segredo de cliente Entra como segredo de sessão. O `.env.example` contém apenas placeholders e nunca deve receber credenciais reais em commit.
 
 ## Execução local
 
-Requer Python 3.12 (ou compatível) e as dependências listadas no `requirements.txt`. Dentro da pasta do projeto, instale-as e inicie o serviço:
+Requer Python 3.12. Instale dependências e inicie:
 
 ```bash
 python -m pip install -r requirements.txt
 python server.py
 ```
 
-Abrir `http://127.0.0.1:8000`. O serviço escuta em todas as interfaces da máquina (`0.0.0.0`); para uso estritamente local, limitar o acesso a localhost/firewall da máquina. Não expor este servidor à internet: não há autenticação, CSRF, controle multiusuário ou sessão segura.
+Acesse `http://127.0.0.1:8000`. Sem variáveis de autenticação, o serviço roda em modo local para teste de arquivos. **Não exponha esse modo local à internet.** Para simular autenticação, não crie valores falsos: configure um aplicativo de teste Entra e uma lista de usuários de teste autorizados.
 
-### Verificação de dependências num ambiente novo
+## Azure AI Foundry (opcional)
+
+A integração é desabilitada por padrão. A TI deve configurar, no ambiente protegido do servidor, `AZURE_OPENAI_ENDPOINT` (HTTPS), `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_VERSION`, `DUARTE_AI_ANALYSIS_ENABLED=true` e `DUARTE_AI_ACCESS_TOKEN`. Confirme com o time de plataforma que endpoint, deployment e versão REST são suportados pelo recurso. O segredo compartilhado da análise não é conta Microsoft nem controle multiusuário. Não habilite IA até aprovar finalidade, acesso, tratamento e transferência dos dados.
+
+## Rotas para verificação
+
+- `GET /` — painel local ou página de entrada corporativa.
+- `GET /auth/login` — inicia o login Microsoft quando configurado.
+- `GET /auth/callback` — retorno OAuth/OIDC.
+- `GET /api/auth/status` — estado da sessão, sem tokens.
+- `POST /auth/logout` — encerra sessão.
+- `GET /api/health` — status básico sem segredos.
+- `POST /api/emails`, `/api/matrix`, `/api/export/xlsx`, `/api/export/pdf` — importação e exportação.
+
+## Segurança e dados
+
+- Não inclua credenciais no código ou arquivos versionados. Revogue imediatamente credenciais expostas.
+- Use apenas HTTPS publicamente e configure a URI de retorno exatamente.
+- Não carregue dados reais até validar autenticação, lista de usuários, permissões, controles de acesso e obrigações LGPD da organização.
+- Os arquivos são processados na memória da requisição e não há persistência operacional intencional. O cache OAuth e sessões persistem apenas na memória do processo.
+- Arquivos de origem devem ser revisados e autorizados; não trate fórmulas externas sem valor calculado como zero ou como conclusão.
+- Datas sem fuso em CSV/XLSX não são convertidas automaticamente. A seleção de fuso na interface é informativa para essas fontes.
+
+## Verificação local
 
 ```bash
-python -m pip install -r requirements.txt
-python server.py
+python -m py_compile server.py
+python -m unittest discover -s tests -v
 ```
 
-Nenhuma credencial real está incluída. Para ativar a integração opcional, a TI deve configurar no ambiente protegido do serviço — nunca no código, navegador ou repositório — `AZURE_OPENAI_ENDPOINT` (HTTPS do recurso), `AZURE_OPENAI_DEPLOYMENT` (deployment disponível no Foundry), `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_VERSION` (padrão documentado no exemplo), `DUARTE_AI_ANALYSIS_ENABLED=true` e `DUARTE_AI_ACCESS_TOKEN` (segredo aleatório forte para acesso à rota). Consulte `.env.example` apenas como modelo; não publique o valor preenchido.
+A validação local não substitui um teste de login real no Entra nem confirma o deploy no Railway. O login deve ser testado após configurar variáveis protegidas e o callback correto.
 
-O servidor chama a interface REST de Chat Completions do endpoint configurado; não há SDK Microsoft instalado, integração Entra, validação de tenant, OAuth ou autorização por usuário. A chave Azure permanece no servidor; o segredo compartilhado de acesso é digitado pelo usuário e enviado em HTTPS somente à aplicação. Mesmo assim, esse gate não é adequado como autenticação de produção. O endpoint `/api/ai/status` informa apenas se as variáveis estão presentes; não verifica credenciais nem testa a disponibilidade/modelo. Chaves, deployment, versão de API, região e políticas devem ser confirmados pela TI e pelo responsável de privacidade antes de habilitar.
+## Não incluído
 
-A análise envia assunto, remetente, destinatários, data, identificador de conversa e corpo de cada mensagem selecionada ao serviço Azure configurado. Não envia anexos, mas o corpo pode incluir histórico citado e dados sensíveis. Há limites rígidos para evitar processamento parcial; não existe estimativa de custo, aprovação de cada destinatário, mascaramento/anonimização, cota de uso ou trilha de auditoria. Em `.eml`, mensagens multipartas podem fornecer versões `text/plain` e `text/html` simultaneamente; nesta versão ambas podem ser incluídas e causar duplicidade de texto na análise. Revise os arquivos de origem antes de consentir o envio. Não use dados reais enquanto não forem implementados login e autorização corporativos, CSRF, rate limiting, política de retenção e aprovação formal da organização. A aplicação local não grava o conteúdo da análise entre sessões.
-
-
-## Login Microsoft Entra ID no Railway (pacote atualizado)
-
-A rota de retorno configurada no código e no exemplo é **https://duartelats-production.up.railway.app/auth/callback**. Cadastre-a como plataforma **Web** no registro do aplicativo Entra, usando exatamente HTTPS e o caminho `/auth/callback`; não cadastre como SPA. O aplicativo solicita somente permissões delegadas `User.Read` e `Mail.Read`, sem envio, exclusão ou alteração de mensagens.
-
-### Configuração no Entra
-
-1. Crie um registro de aplicativo para Duarte Relats no locatário corporativo; escolha contas somente deste diretório, salvo decisão organizacional diferente.
-2. Em **Autenticação → Adicionar uma plataforma → Web**, adicione `https://duartelats-production.up.railway.app/auth/callback`.
-3. Em **Permissões de API**, adicione Microsoft Graph → permissões delegadas `User.Read` e `Mail.Read`; conceda consentimento administrativo se a política da organização exigir.
-4. Copie o **ID do aplicativo (cliente)** e o **ID do diretório (locatário)**. Crie um segredo de cliente e guarde seu valor diretamente no Railway; nunca o envie por chat ou inclua no Git.
-
-### Variáveis protegidas no Railway
-
-Em **Variables** do serviço Duarte Relats, configure: `DUARTE_ENTRA_TENANT_ID` (ID do locatário), `DUARTE_ENTRA_CLIENT_ID` (ID do aplicativo), `DUARTE_ENTRA_CLIENT_SECRET` (valor secreto), `DUARTE_SESSION_SECRET` (valor aleatório com pelo menos 32 caracteres), `DUARTE_AUTH_REQUIRED=true` e `DUARTE_PUBLIC_BASE_URL=https://duartelats-production.up.railway.app`. O arquivo `.env.example` lista apenas nomes e valores fictícios. Depois, faça novo deploy. Não compartilhe capturas mostrando valores.
-
-Se precisar gerar `DUARTE_SESSION_SECRET` no computador de TI, use um gerador criptográfico local (por exemplo, `python -c "import secrets; print(secrets.token_urlsafe(48))"`) e cole o resultado diretamente no campo protegido do Railway. Esse segredo não é o segredo do aplicativo Entra.
-
-### O que a autenticação implementa e seus limites
-
-- Login OAuth 2.0/OIDC por fluxo de autorização web, validação de estado e cookie de correlação, cookie de sessão `HttpOnly`/`SameSite=Lax`/`Secure` em HTTPS, expiração de 8 horas e logout que invalida a sessão no servidor. A aplicação bloqueia páginas e APIs quando a autenticação é exigida e não configurada; `/api/health` continua público sem revelar segredos.
-- Token cache Microsoft permanece somente na memória do processo, nunca em cookie, navegador ou disco. Reinício/redeploy encerra sessões; não escale para múltiplas réplicas sem armazenamento compartilhado seguro de sessão/cache.
-- A sessão exige consentimento confirmado para `User.Read` e `Mail.Read` e valida o perfil em Microsoft Graph. A tela identifica a conta conectada. Requisições de escrita do navegador exigem origem do domínio configurado.
-- **Importante:** o login e a autorização delegada estão preparados, mas buscar, paginar e analisar mensagens do Outlook via Graph ainda não está implementado. O estado conectado não significa que e-mails foram lidos. A interface de importação manual continua separada.
-- O servidor deve estar servido exclusivamente por HTTPS público; para outro domínio, altere `DUARTE_PUBLIC_BASE_URL` e atualize a URL de redirecionamento no Entra para coincidir exatamente. Não use endereço do Duarte Mailing.
-
-## Arquitetura recomendada para produção
-
-- Front-end estático servido por CDN/servidor web com CSP e configuração HTTPS.
-- Back-end autenticado para OAuth/OIDC Google, sessões com cookies HttpOnly/Secure/SameSite, autorização por usuário/perfil e auditoria.
-- Microsoft Graph via fluxo OAuth com consentimento explícito e escopos mínimos de leitura, tokens protegidos apenas no servidor/secret store, seleção explícita de caixa/pasta e expiração/revogação. Login Google nunca substitui autorização Microsoft.
-- PostgreSQL para usuários, importações, vínculo revisado, regras de semáforo, execução/exportação e auditoria; armazenamento de objetos criptografado e de retenção curta se arquivos forem indispensáveis. Não armazenar corpos de e-mails por padrão.
-- Deploy com serviço separado de aplicação, banco gerenciado e armazenamento persistente; migrações versionadas, backup automatizado e teste periódico de restauração. Nenhum Railway/PostgreSQL está conectado/configurado neste pacote.
-- Duarte Performance por exportação autorizada inicialmente; API exige endpoints, autenticação, permissões e mapeamento de métricas confirmados.
-
-### Esquema mínimo recomendado
-
-`users(id, email, display_name, role, created_at)`; `imports(id, user_id, kind, source_name, sha256, read_at, reference_start, reference_end, row_count, ignored_count, errors_json, version)`; `email_metadata(id, import_id, message_key, sent_at, sender, recipients_json, subject, direction, thread_id, customer_code, customer_label, match_method, reviewed_by, reviewed_at)`; `matrix_records(id, import_id, row_key, customer_code, operator_id, operator_name, source_date, fields_json)`; `rules(id, scope, green_days, orange_days, red_days, effective_at, user_id)`; `reconciliations(id, matrix_import_id, performance_import_id, metric, reports_value, performance_value, delta, status)`; `audit_events(id, user_id, action, object_type, object_id, occurred_at, details_json)`. Retenção, papéis e política de acesso: a confirmar com Duarte Gestão e encarregado LGPD.
-
-## Campos e itens a confirmar com o usuário
-
-1. Definição de “contato válido”, inclusão de e-mails recebidos, critérios de associação por código, domínio e apelidos, regras de mensagens automáticas e de conversas.
-2. Prazos/limites verde, laranja, vermelho e segmentação por rotina/cliente; fontes válidas de última data de contato.
-3. Cabeçalho/linha de dados autoritativos da matriz e campos de código estável. Planilha apresenta fórmulas externas para cliente, ID, prioridade, código ANS e status, além de datas e campos de contato; resultados podem não estar resolvidos fora do Excel.
-4. Mapeamento das métricas/colunas de Duarte Performance, período e método de comparação.
-5. Política de retenção, perfis de acesso, provedores/domínios OAuth autorizados e consentimentos administrativos Graph.
-6. Fonte telefônica e campos autorizados para fase futura.
-
-## Checklist básico
-
-- [ ] Testar importação de EML exportado com data/remetente/assunto.
-- [ ] Testar CSV UTF-8 com cabeçalhos reconhecidos e período de datas.
-- [ ] Testar XLSX/XLSM sem senha e comparar linha a linha com origem.
-- [ ] Testar workbook com fórmulas sem cache (não tratar valor vazio como zero).
-- [ ] Confirmar deduplicação quando Message-ID está ausente/presente.
-- [ ] Comparar abas e fórmulas críticas no Excel original; o arquivo fonte nunca deve ser regravado.
-- [ ] Conferir Excel/PDF exportados contra a mesma importação.
-- [ ] Validar acessibilidade, uso em tamanhos comuns e `prefers-reduced-motion`.
-- [ ] Antes de produção: OAuth real, Graph consentido, controles de acesso, LGPD, persistência, CSRF, rate limiting, auditoria e backup/restore.
-
-## Anexos efetivamente analisados
-
-- `index.html`: estrutura SaaS com login, menu lateral, painel, cartões, painéis e formulários; branding existente é “Duarte Repay”, não foi reaproveitado literalmente.
-- `Relatorio_Consolidado_20260629_1226.xlsx`: abas de resumo e dois detalhamentos de cliente; estados vazios/zeros indicados acima.
-- `Mostrando-Sistema.md`: referência narrativa de três páginas com identificação, resumo, participantes, cronologia, tópicos, decisões, ações, riscos e próximos passos; nome da marca não se aplica.
-- Matriz `.xlsm`: abas FLUXO OPERACIONAL, TRABALHOS DIÁRIOS, REUNIÕES E VISITAS, RESUMO OPERADORAS, DETALHES OPERADORAS, FICHA CADASTRAL, ESPECIALIDADE e CONTATOS. FLUXO OPERACIONAL tem cabeçalho COD, CLIENTE, ID, OPERADORA, CATEGORIA, ID PRIOR., PRIORIDADE, NÚMERO ANS, VIDAS NA ANS, PORTE, HONORÁRIOS, DIFERENCIAL e campos de fluxo/status; TRABALHOS DIÁRIOS tem DATA, OPERADORA/CLIENTE, DESCRIÇÃO DA ATIVIDADE e STATUS; REUNIÕES E VISITAS tem COD, CLIENTE, ID OPER., OPERADORA, DATA, HORÁRIO, TIPO, MOTIVO, STATUS, DETALHE, PARTICIPANTES, OBSERVAÇÃO; RESUMO/DETALHES contêm datas contratuais, prestador e dados de serviços; CONTATOS contém códigos, cliente, operadora e colunas de datas/contatos. Encontradas fórmulas `_xlfn.XLOOKUP` com referências externas. Proteção de workbook reportada como ausente pelo parser e nenhum mecanismo de senha utilizado; não alteramos o arquivo original.
+Conexão Graph e leitura de e-mails, análise de anexos/OCR, persistência PostgreSQL, histórico multiusuário, reconciliação real com Duarte Performance, OAuth Google, conexão de telefonia e regras oficiais do semáforo. Ausência de informação deve permanecer “não informado”/“a confirmar”, não zero presumido.

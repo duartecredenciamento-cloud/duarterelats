@@ -26,7 +26,8 @@ MAX_UPLOAD=25*1024*1024
 import secrets, threading, urllib.parse
 from http.cookies import SimpleCookie
 
-AUTH_SCOPES=['User.Read','Mail.Read']
+# Login requires profile access only; Graph mail reading is not implemented.
+AUTH_SCOPES=['User.Read']
 SESSION_TTL=8*60*60
 _auth_sessions={}
 _auth_flows={}
@@ -39,13 +40,13 @@ def _auth_settings():
     valid_base=(p.scheme=='https' or (local and p.scheme=='http')) and bool(p.netloc) and not p.query and not p.fragment
     required=os.environ.get('DUARTE_AUTH_REQUIRED','').lower()=='true' or bool(os.environ.get('RAILWAY_ENVIRONMENT'))
     provided=any(os.environ.get(k,'').strip() for k in ('DUARTE_ENTRA_TENANT_ID','DUARTE_ENTRA_CLIENT_ID','DUARTE_ENTRA_CLIENT_SECRET'))
-    values={'tenant':os.environ.get('DUARTE_ENTRA_TENANT_ID','').strip(),'client_id':os.environ.get('DUARTE_ENTRA_CLIENT_ID','').strip(),'client_secret':os.environ.get('DUARTE_ENTRA_CLIENT_SECRET','').strip(),'session_secret':os.environ.get('DUARTE_SESSION_SECRET',''),'base':base,'redirect':base+'/auth/callback','required':required,'provided':provided,'valid_base':valid_base}
+    values={'tenant':os.environ.get('DUARTE_ENTRA_TENANT_ID','').strip(),'client_id':os.environ.get('DUARTE_ENTRA_CLIENT_ID','').strip(),'client_secret':os.environ.get('DUARTE_ENTRA_CLIENT_SECRET','').strip(),'session_secret':os.environ.get('DUARTE_SESSION_SECRET',''),'base':base,'redirect':base+'/auth/callback','required':required,'provided':provided,'valid_base':valid_base,'allowed_users':{x.strip().lower() for x in os.environ.get('DUARTE_ALLOWED_USERS','').split(',') if x.strip()}}
     try:
         import msal
         values['msal_available']=True
     except ImportError:
         values['msal_available']=False
-    values['configured']=bool(values['tenant'] and values['client_id'] and values['client_secret'] and len(values['session_secret'])>=32 and valid_base and values['msal_available'])
+    values['configured']=bool(values['tenant'] and values['client_id'] and values['client_secret'] and len(values['session_secret'])>=32 and valid_base and values['msal_available'] and values['allowed_users'])
     values['enabled']=values['configured'] or required or provided
     return values
 
@@ -94,11 +95,11 @@ def _graph_profile(token):
     try:
         with urlopen(req,timeout=20) as response:return json.loads(response.read(1024*1024))
     except HTTPError as exc:
-        if exc.code in (401,403):raise RuntimeError('A Microsoft recusou o acesso ao perfil. Confira o consentimento User.Read e Mail.Read no Entra.')
+        if exc.code in (401,403):raise RuntimeError('A Microsoft recusou o acesso ao perfil. Confira o consentimento delegado User.Read no Entra.')
         raise RuntimeError('Não foi possível confirmar o perfil Microsoft no Graph.')
     except (URLError,TimeoutError):raise RuntimeError('Não foi possível conectar ao Microsoft Graph para confirmar o login.')
 
-AUTH_SETUP_HTML='<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Configuração necessária · Duarte Relats</title><body style="font:16px/1.55 system-ui;max-width:760px;margin:8vh auto;padding:24px;color:#14233d"><h1 style="color:#001e57">Login Microsoft ainda não configurado</h1><p>Por segurança, o acesso ao Duarte Relats está bloqueado até a TI concluir a configuração do Microsoft Entra ID no serviço.</p><p>Cadastre no Entra uma plataforma <b>Web</b> com esta URI de redirecionamento:</p><pre style="padding:14px;background:#f2f5f9;overflow-wrap:anywhere">https://duartelats-production.up.railway.app/auth/callback</pre><p>Depois configure, somente nas variáveis protegidas do Railway: <code>DUARTE_ENTRA_TENANT_ID</code>, <code>DUARTE_ENTRA_CLIENT_ID</code>, <code>DUARTE_ENTRA_CLIENT_SECRET</code> e <code>DUARTE_SESSION_SECRET</code> (segredo aleatório com ao menos 32 caracteres), além de <code>DUARTE_AUTH_REQUIRED=true</code> e <code>DUARTE_PUBLIC_BASE_URL=https://duartelats-production.up.railway.app</code>.</p><p>Permissões delegadas mínimas: <code>User.Read</code> e <code>Mail.Read</code>. O login não significa que a leitura de mensagens ou a geração via Graph já esteja implementada.</p><p>Não coloque segredos no GitHub, no navegador ou nesta conversa. Consulte o README para instruções.</p></body></html>'
+AUTH_SETUP_HTML='<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Configuração necessária · Duarte Relats</title><body style="font:16px/1.55 system-ui;max-width:760px;margin:8vh auto;padding:24px;color:#14233d"><h1 style="color:#001e57">Login Microsoft ainda não configurado</h1><p>Por segurança, o acesso ao Duarte Relats está bloqueado até a TI concluir a configuração do Microsoft Entra ID no serviço.</p><p>Cadastre no Entra uma plataforma <b>Web</b> com esta URI de redirecionamento:</p><pre style="padding:14px;background:#f2f5f9;overflow-wrap:anywhere">https://duartelats-production.up.railway.app/auth/callback</pre><p>Depois configure, somente nas variáveis protegidas do Railway: <code>DUARTE_ENTRA_TENANT_ID</code>, <code>DUARTE_ENTRA_CLIENT_ID</code>, <code>DUARTE_ENTRA_CLIENT_SECRET</code> e <code>DUARTE_SESSION_SECRET</code> (segredo aleatório com ao menos 32 caracteres), além de <code>DUARTE_AUTH_REQUIRED=true</code> e <code>DUARTE_PUBLIC_BASE_URL=https://duartelats-production.up.railway.app</code>.</p><p>Permissão delegada mínima para login: <code>User.Read</code>. Configure também <code>DUARTE_ALLOWED_USERS</code> com os e-mails corporativos autorizados. O login não significa que a leitura de mensagens ou a geração via Graph já esteja implementada.</p><p>Não coloque segredos no GitHub, no navegador ou nesta conversa. Consulte o README para instruções.</p></body></html>'
 
 
 def json_bytes(obj): return json.dumps(obj,ensure_ascii=False,default=str).encode()
@@ -217,7 +218,7 @@ def _source_labels(refs, sources):
 def make_xlsx(payload):
     wb=Workbook(); ws=wb.active; ws.title='Resumo Executivo'
     meta=payload.get('meta',{}); emails=payload.get('emails',[]); matrix=payload.get('matrix',{}); analysis=payload.get('analysis',{}); sources=_analysis_sources(analysis)
-    ws.append(['Duarte Reports — Relatório operacional']);ws.append(['Período',meta.get('period','Não informado')]);ws.append(['Gerado em',datetime.now().astimezone().isoformat(timespec='seconds')]);ws.append(['Responsável',meta.get('responsible') or 'Não informado']);ws.append(['Fonte',meta.get('source') or 'Importação local']);ws.append(['E-mails únicos',len(emails)]);ws.append(['Clientes/operadoras identificados',len({e.get('cliente') for e in emails if e.get('cliente')})]);ws.append(['Duplicidades removidas',payload.get('duplicates',0)]);ws.append(['Observação','Correspondência de cliente não inferida; valores ausentes preservados.'])
+    ws.append(['Duarte Relats — Relatório operacional']);ws.append(['Período',meta.get('period','Não informado')]);ws.append(['Gerado em',datetime.now().astimezone().isoformat(timespec='seconds')]);ws.append(['Responsável',meta.get('responsible') or 'Não informado']);ws.append(['Fonte',meta.get('source') or 'Importação local']);ws.append(['E-mails únicos',len(emails)]);ws.append(['Clientes/operadoras identificados',len({e.get('cliente') for e in emails if e.get('cliente')})]);ws.append(['Duplicidades removidas',payload.get('duplicates',0)]);ws.append(['Observação','Correspondência de cliente não inferida; valores ausentes preservados.'])
     detail=wb.create_sheet('Detalhamento de E-mails'); detail.append(['Data/hora','Remetente','Destinatários','Assunto','Direção','Cliente/operadora','Conversa','ID mensagem','Fonte'])
     for e in emails: detail.append([e.get(k) for k in ['data','remetente','destinatarios','assunto','direcao','cliente','conversa','id','fonte']])
     clients=wb.create_sheet('Consolidado por Cliente'); clients.append(['Cliente/operadora','Mensagens','Último contato'])
@@ -249,7 +250,7 @@ def make_xlsx(payload):
 
 def make_pdf(payload):
     meta=payload.get('meta',{}); emails=payload.get('emails',[]); matrix=payload.get('matrix',{}); analysis=payload.get('analysis',{}); sources=_analysis_sources(analysis); buf=io.BytesIO()
-    doc=SimpleDocTemplate(buf,pagesize=A4,rightMargin=18*mm,leftMargin=18*mm,topMargin=18*mm,bottomMargin=18*mm,title='Duarte Reports — Relatório operacional')
+    doc=SimpleDocTemplate(buf,pagesize=A4,rightMargin=18*mm,leftMargin=18*mm,topMargin=18*mm,bottomMargin=18*mm,title='Duarte Relats — Relatório operacional')
     styles=getSampleStyleSheet();styles.add(ParagraphStyle(name='DRTitle',parent=styles['Title'],textColor=colors.HexColor('#001E57'),fontSize=25,leading=30,spaceAfter=9));styles.add(ParagraphStyle(name='DRH',parent=styles['Heading2'],textColor=colors.HexColor('#001E57'),spaceBefore=14));styles.add(ParagraphStyle(name='DRBody',parent=styles['BodyText'],fontSize=9,leading=13,spaceAfter=5));story=[]
     story += [Paragraph('DUARTE REPORTS',styles['DRTitle']),Paragraph('Relatório operacional • E-mails e matrizes',styles['Heading2']),Spacer(1,7*mm)]
     for label,val in [('Período analisado',meta.get('period','Não informado')),('Gerado em',datetime.now().astimezone().strftime('%d/%m/%Y %H:%M %Z')),('Responsável',meta.get('responsible') or 'Não informado'),('Fonte efetiva',meta.get('source') or 'Importação local')]:story.append(Paragraph(f'<b>{label}:</b> {val}',styles['BodyText']))
@@ -471,9 +472,11 @@ class Handler(SimpleHTTPRequestHandler):
             # MSAL valida state e nonce ao concluir acquire_token_by_auth_code_flow.
             granted_raw=result.get('scope',[])
             granted={x.lower() for x in (granted_raw.split() if isinstance(granted_raw,str) else granted_raw)}
-            if not {'user.read','mail.read'}.issubset(granted):raise RuntimeError('O consentimento delegado User.Read e Mail.Read não foi confirmado. Peça consentimento autorizado no Entra.')
+            if 'user.read' not in granted:raise RuntimeError('O consentimento delegado User.Read não foi confirmado. Peça consentimento autorizado no Entra.')
             profile=_graph_profile(result['access_token'])
-            username=profile.get('mail') or profile.get('userPrincipalName') or result.get('id_token_claims',{}).get('preferred_username','')
+            username=(profile.get('mail') or profile.get('userPrincipalName') or result.get('id_token_claims',{}).get('preferred_username','')).strip().lower()
+            if not username or username not in cfg['allowed_users']:
+                raise RuntimeError('Esta conta Microsoft não está autorizada para o Duarte Relats. Solicite inclusão à TI.')
             sid=secrets.token_urlsafe(32)
             session={'token_cache':cache.serialize(),'username':username,'display_name':profile.get('displayName') or username,'expires':time.time()+SESSION_TTL}
             with _auth_lock:_auth_sessions[_session_key(sid)]=session
@@ -482,7 +485,14 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as exc:
             print(f'[auth] callback failed: {type(exc).__name__}',flush=True)
             msg=str(exc) if isinstance(exc,RuntimeError) else 'O login Microsoft não foi concluído. Confira a configuração do Entra e tente novamente.'
-            return self.send_json({'error':msg},401)
+            return self._auth_error_page(msg,401)
+    def _login_landing(self):
+        cfg=_auth_settings()
+        message='Acesso corporativo protegido. Entre com sua conta autorizada pela Duarte Gestão.' if cfg['configured'] else 'A equipe de TI precisa concluir a configuração segura antes de liberar o acesso.'
+        button='<a class="button" href="/auth/login"><span class="ms">M</span>Entrar com Microsoft</a>' if cfg['configured'] else '<div class="note">Login indisponível até a TI configurar o Entra ID, a lista de usuários autorizados e os segredos protegidos do serviço.</div>'
+        page=f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#001E57"><title>Entrar · Duarte Relats</title><style>*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(ellipse at 80% 15%,#e4edf8 0,transparent 40%),#f4f7fb;color:#14233d;font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}}main{{width:min(100%,460px);background:#fff;border:1px solid #e4eaf2;border-radius:20px;padding:42px;box-shadow:0 20px 60px #0a254014}}.brand{{display:flex;align-items:center;gap:13px;color:#001e57;font-weight:800;font-size:21px}}.mark{{width:45px;height:45px;display:grid;place-items:center;border-radius:13px;background:#ff9200;color:#001e57;font-size:24px}}.sub{{font-size:10px;letter-spacing:1.6px;color:#73829a;margin:3px 0 0}}h1{{font-size:27px;letter-spacing:-.7px;color:#001e57;margin:35px 0 8px}}p{{color:#63728a;margin:0 0 22px}}.button{{display:flex;align-items:center;justify-content:center;gap:10px;text-decoration:none;background:#001e57;color:white;border-radius:9px;padding:13px 16px;font-weight:700}}.button:hover{{background:#0a2540}}.ms{{font-weight:800;background:white;color:#2875bd;border-radius:4px;width:22px;height:22px;display:grid;place-items:center}}.foot{{border-top:1px solid #edf1f6;margin-top:25px;padding-top:16px;color:#8290a4;font-size:11px}}.note{{background:#fff8ec;border:1px solid #f1dfbf;padding:13px;border-radius:9px;color:#79551a;font-size:13px}}</style></head><body><main><div class="brand"><span class="mark">D</span><span>Duarte Relats<div class="sub">GESTÃO OPERACIONAL</div></span></div><h1>Acesso seguro</h1><p>{message}</p>{button}<div class="foot">Acesso restrito a usuários autorizados. A autenticação não significa que mensagens do Outlook foram conectadas.</div></main></body></html>"""
+        data=page.encode('utf-8');self.send_response(200 if cfg['configured'] else 503);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+
     def do_GET(self):
         path=urlparse(self.path).path
         cfg=_auth_settings()
@@ -513,7 +523,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({'enabled':cfg['enabled'],'authenticated':bool(session),'display_name':session.get('display_name') if session else None,'email':session.get('username') if session else None,'mail_read_authorized':bool(session),'mail_read_implemented':False})
         if path=='/auth/logout':return self.send_json({'error':'Use POST para sair.'},405)
         if cfg['enabled'] and not cfg['configured']:return self._setup_page()
-        if cfg['enabled'] and not _get_session(self):return self._redirect('/auth/login')
+        if cfg['enabled'] and not _get_session(self):
+            if path in ('/','/index.html'):
+                return self._login_landing()
+            return self._redirect('/')
         if path=='/api/ai/status':return self.send_json({'configured':azure_ai_configured(),'provider':'Azure AI Foundry','auth_required':bool(os.environ.get('DUARTE_AI_ACCESS_TOKEN')),'attachments_supported':False})
         return super().do_GET()
     def do_POST(self):
@@ -553,7 +566,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if payload.get('analysis') and not (session if cfg['enabled'] else (os.environ.get('DUARTE_AI_ACCESS_TOKEN','') and hmac.compare_digest(os.environ.get('DUARTE_AI_ACCESS_TOKEN',''),self.headers.get('X-Duarte-Access-Token','')))):
                     return self.send_json({'error':'Acesso à exportação executiva não autorizado.'},401)
                 content=make_xlsx(payload) if path.endswith('xlsx') else make_pdf(payload)
-                fname='DuarteReports_Relatorio.xlsx' if self.path.endswith('xlsx') else 'DuarteReports_Relatorio.pdf'
+                fname='DuarteRelats_Relatorio.xlsx' if self.path.endswith('xlsx') else 'DuarteRelats_Relatorio.pdf'
                 self.send_response(200);self.send_header('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if fname.endswith('xlsx') else 'application/pdf');self.send_header('Content-Disposition',f'attachment; filename="{fname}"');self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content);return
             fields,files=parse_multipart_form(self.headers.get('Content-Type',''),body)
             if path=='/api/emails':
@@ -581,4 +594,4 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as e:return self.send_json({'error':str(e) or 'Falha ao processar arquivo'},400)
 
 if __name__=='__main__':
-    port=int(os.environ.get('PORT','8000'));print(f'Duarte Reports disponível na porta {port}',flush=True);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
+    port=int(os.environ.get('PORT','8000'));print(f'Duarte Relats disponível na porta {port}',flush=True);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
